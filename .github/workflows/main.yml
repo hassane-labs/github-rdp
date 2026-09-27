@@ -1,0 +1,116 @@
+name: Windows RDP Test
+
+on:
+workflow_dispatch:
+
+jobs:
+windows-test:
+name: Windows Runner
+runs-on: windows-latest
+timeout-minutes: 30
+
+```
+steps:
+
+  - name: Informations système
+    shell: pwsh
+    run: |
+      Write-Host "================================="
+      Write-Host "       INFORMATIONS WINDOWS"
+      Write-Host "================================="
+
+      Get-ComputerInfo |
+        Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+
+  - name: Informations CPU
+    shell: pwsh
+    run: |
+      Write-Host "================================="
+      Write-Host "              CPU"
+      Write-Host "================================="
+
+      Get-CimInstance Win32_Processor |
+        Select-Object Name,
+                      NumberOfCores,
+                      NumberOfLogicalProcessors
+
+  - name: Informations RAM
+    shell: pwsh
+    run: |
+      Write-Host "================================="
+      Write-Host "              RAM"
+      Write-Host "================================="
+
+      $ram = Get-CimInstance Win32_ComputerSystem
+
+      $ramGB = [math]::Round(
+        $ram.TotalPhysicalMemory / 1GB,
+        2
+      )
+
+      Write-Host "RAM totale : $ramGB GB"
+
+  - name: Informations stockage
+    shell: pwsh
+    run: |
+      Write-Host "================================="
+      Write-Host "           STOCKAGE"
+      Write-Host "================================="
+
+      Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+        Select-Object DeviceID,
+          @{Name="TotalGB";Expression={
+            [math]::Round($_.Size / 1GB, 2)
+          }},
+          @{Name="FreeGB";Expression={
+            [math]::Round($_.FreeSpace / 1GB, 2)
+          }}
+
+  - name: Vérifier Internet
+    shell: pwsh
+    run: |
+      Write-Host "================================="
+      Write-Host "          CONNEXION INTERNET"
+      Write-Host "================================="
+
+      try {
+        $ip = Invoke-RestMethod `
+          -Uri "https://api.ipify.org"
+
+        Write-Host "IP publique : $ip"
+      }
+      catch {
+        Write-Host "Impossible de récupérer l'IP publique."
+      }
+
+      Write-Host ""
+      Write-Host "Test HTTPS vers GitHub :"
+
+      Test-NetConnection `
+        github.com `
+        -Port 443
+
+  - name: Informations GitHub Runner
+    shell: pwsh
+    run: |
+      Write-Host "================================="
+      Write-Host "       GITHUB RUNNER"
+      Write-Host "================================="
+
+      Write-Host "Runner : $env:RUNNER_NAME"
+      Write-Host "OS : $env:RUNNER_OS"
+      Write-Host "Architecture : $env:RUNNER_ARCH"
+
+  - name: Maintenir la machine active
+    shell: pwsh
+    run: |
+      Write-Host ""
+      Write-Host "================================="
+      Write-Host "     RUNNER WINDOWS ACTIF"
+      Write-Host "================================="
+      Write-Host ""
+      Write-Host "La VM restera active pendant 20 minutes."
+      Write-Host "Elle sera supprimée à la fin du workflow."
+
+      Start-Sleep -Seconds 1200
+```
