@@ -5,112 +5,52 @@ workflow_dispatch:
 
 jobs:
 windows-test:
-name: Windows Runner
 runs-on: windows-latest
-timeout-minutes: 30
+timeout-minutes: 20
 
 ```
 steps:
-
-  - name: Informations système
+  - name: Check Windows
     shell: pwsh
     run: |
-      Write-Host "================================="
-      Write-Host "       INFORMATIONS WINDOWS"
-      Write-Host "================================="
+      Write-Host "=== WINDOWS ==="
+      Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion
 
-      Get-ComputerInfo |
-        Select-Object WindowsProductName, WindowsVersion, OsArchitecture
-
-  - name: Informations CPU
+  - name: Check CPU
     shell: pwsh
     run: |
-      Write-Host "================================="
-      Write-Host "              CPU"
-      Write-Host "================================="
-
+      Write-Host "=== CPU ==="
       Get-CimInstance Win32_Processor |
-        Select-Object Name,
-                      NumberOfCores,
-                      NumberOfLogicalProcessors
+        Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
 
-  - name: Informations RAM
+  - name: Check RAM
     shell: pwsh
     run: |
-      Write-Host "================================="
-      Write-Host "              RAM"
-      Write-Host "================================="
-
+      Write-Host "=== RAM ==="
       $ram = Get-CimInstance Win32_ComputerSystem
+      $ramGB = [math]::Round($ram.TotalPhysicalMemory / 1GB, 2)
+      Write-Host "RAM: $ramGB GB"
 
-      $ramGB = [math]::Round(
-        $ram.TotalPhysicalMemory / 1GB,
-        2
-      )
-
-      Write-Host "RAM totale : $ramGB GB"
-
-  - name: Informations stockage
+  - name: Check storage
     shell: pwsh
     run: |
-      Write-Host "================================="
-      Write-Host "           STOCKAGE"
-      Write-Host "================================="
-
+      Write-Host "=== STORAGE ==="
       Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
         Select-Object DeviceID,
-          @{Name="TotalGB";Expression={
-            [math]::Round($_.Size / 1GB, 2)
-          }},
-          @{Name="FreeGB";Expression={
-            [math]::Round($_.FreeSpace / 1GB, 2)
-          }}
+          @{Name="TotalGB"; Expression={[math]::Round($_.Size / 1GB, 2)}},
+          @{Name="FreeGB"; Expression={[math]::Round($_.FreeSpace / 1GB, 2)}}
 
-  - name: Vérifier Internet
+  - name: Check Internet
     shell: pwsh
     run: |
-      Write-Host "================================="
-      Write-Host "          CONNEXION INTERNET"
-      Write-Host "================================="
+      Write-Host "=== INTERNET ==="
+      $ip = Invoke-RestMethod -Uri "https://api.ipify.org"
+      Write-Host "Public IP: $ip"
 
-      try {
-        $ip = Invoke-RestMethod `
-          -Uri "https://api.ipify.org"
-
-        Write-Host "IP publique : $ip"
-      }
-      catch {
-        Write-Host "Impossible de récupérer l'IP publique."
-      }
-
-      Write-Host ""
-      Write-Host "Test HTTPS vers GitHub :"
-
-      Test-NetConnection `
-        github.com `
-        -Port 443
-
-  - name: Informations GitHub Runner
+  - name: Keep runner alive
     shell: pwsh
     run: |
-      Write-Host "================================="
-      Write-Host "       GITHUB RUNNER"
-      Write-Host "================================="
-
-      Write-Host "Runner : $env:RUNNER_NAME"
-      Write-Host "OS : $env:RUNNER_OS"
-      Write-Host "Architecture : $env:RUNNER_ARCH"
-
-  - name: Maintenir la machine active
-    shell: pwsh
-    run: |
-      Write-Host ""
-      Write-Host "================================="
-      Write-Host "     RUNNER WINDOWS ACTIF"
-      Write-Host "================================="
-      Write-Host ""
-      Write-Host "La VM restera active pendant 20 minutes."
-      Write-Host "Elle sera supprimée à la fin du workflow."
-
-      Start-Sleep -Seconds 1200
+      Write-Host "Windows runner is running."
+      Write-Host "The runner will be destroyed when the job ends."
+      Start-Sleep -Seconds 900
 ```
