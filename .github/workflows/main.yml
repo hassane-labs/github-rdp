@@ -1,56 +1,233 @@
-name: Windows RDP Test
+name: Windows RDP + Tailscale
 
 on:
-workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
-windows-test:
-runs-on: windows-latest
-timeout-minutes: 20
+  secure-rdp:
+    runs-on: windows-2022
+    timeout-minutes: 300
 
-```
-steps:
-  - name: Check Windows
-    shell: pwsh
-    run: |
-      Write-Host "=== WINDOWS ==="
-      Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion
+    steps:
 
-  - name: Check CPU
-    shell: pwsh
-    run: |
-      Write-Host "=== CPU ==="
-      Get-CimInstance Win32_Processor |
-        Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+      # --------------------------------------------------
+      # 1. Activer RDP
+      # --------------------------------------------------
+      - name: Configure Remote Desktop
+        shell: pwsh
+        run: |
+          Write-Host "=== CONFIGURATION RDP ==="
 
-  - name: Check RAM
-    shell: pwsh
-    run: |
-      Write-Host "=== RAM ==="
-      $ram = Get-CimInstance Win32_ComputerSystem
-      $ramGB = [math]::Round($ram.TotalPhysicalMemory / 1GB, 2)
-      Write-Host "RAM: $ramGB GB"
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name 'fDenyTSConnections' `
+            -Value 0 `
+            -Force
 
-  - name: Check storage
-    shell: pwsh
-    run: |
-      Write-Host "=== STORAGE ==="
-      Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
-        Select-Object DeviceID,
-          @{Name="TotalGB"; Expression={[math]::Round($_.Size / 1GB, 2)}},
-          @{Name="FreeGB"; Expression={[math]::Round($_.FreeSpace / 1GB, 2)}}
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name 'UserAuthentication' `
+            -Value 1 `
+            -Force
 
-  - name: Check Internet
-    shell: pwsh
-    run: |
-      Write-Host "=== INTERNET ==="
-      $ip = Invoke-RestMethod -Uri "https://api.ipify.org"
-      Write-Host "Public IP: $ip"
+          Enable-NetFirewallRule `
+            -DisplayGroup 'Remote Desktop'
 
-  - name: Keep runner alive
-    shell: pwsh
-    run: |
-      Write-Host "Windows runner is running."
-      Write-Host "The runner will be destroyed when the job ends."
-      Start-Sleep -Seconds 900
-```
+          Restart-Service `
+            -Name TermService `
+            -Force
+
+          Write-Host "RDP activé."
+
+      # --------------------------------------------------
+      # 2. Créer l'utilisateur RDP
+      # --------------------------------------------------
+      - name: Create RDP User
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          Write-Host "=== CREATION UTILISATEUR RDP ==="
+
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            Write-Error "Le secret RDP_PASSWORD n'est pas configuré."
+            exit 1
+          }
+
+          $securePassword = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $existingUser = Get-LocalUser `
+            -Name "RDP" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $existingUser) {
+            New-LocalUser `
+              -Name "RDP" `
+              -Password $securePassword `
+              -AccountNeverExpires `
+              -PasswordNeverExpires
+          }
+          else {
+            Set-LocalUser `
+              -Name "RDP" `
+              -Password $securePassword
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "RDP" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Utilisateur RDP créé."
+          Write-Host "Le mot de passe n'est pas affiché."
+
+      # --------------------------------------------------
+      # 3. Installer Tailscale
+      # --------------------------------------------------
+      - name: Install Tailscale
+        shell: pwsh
+        run: |
+          Write-Host "=== INSTALLATION TAILSCALE ==="
+
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest `
+            -Uri $tsUrl `
+            -OutFile $installerPath
+
+          Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList @(
+              "/i",
+              "`"$installerPath`"",
+              "/quiet",
+              "/norestart"
+            ) `
+            -Wait
+
+          Remove-Item `
+            $installerPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Tailscale installé."
+
+      # --------------------------------------------------
+      # 4. Connecter Windows à Tailscale
+      # --------------------------------------------------
+      - name: Connect Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          Write-Host "=== CONNEXION TAILSCALE ==="
+
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTHKEY)) {
+            Write-Error "Le secret TAILSCALE_AUTHKEY n'est pas configuré."
+            exit 1
+          }
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+            Write-Error "tailscale.exe introuvable."
+            exit 1
+          }
+
+          & $tailscale up `
+            --authkey="$env:TAILSCALE_AUTHKEY" `
+            --hostname="gh-rdp-$env:GITHUB_RUN_ID"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "La connexion Tailscale a échoué."
+            exit 1
+          }
+
+      # --------------------------------------------------
+      # 5. Récupérer l'adresse Tailscale
+      # --------------------------------------------------
+      - name: Get Tailscale IP
+        shell: pwsh
+        run: |
+          Write-Host "=== ADRESSE TAILSCALE ==="
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          $tsIP = $null
+
+          for ($i = 1; $i -le 12; $i++) {
+
+            $tsIP = (& $tailscale ip -4 2>$null).Trim()
+
+            if ($tsIP) {
+              break
+            }
+
+            Write-Host "Attente de l'adresse Tailscale..."
+            Start-Sleep -Seconds 5
+          }
+
+          if (-not $tsIP) {
+            Write-Error "Aucune adresse IPv4 Tailscale obtenue."
+            exit 1
+          }
+
+          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+          Write-Host "Adresse Tailscale : $tsIP"
+
+      # --------------------------------------------------
+      # 6. Vérifier RDP localement
+      # --------------------------------------------------
+      - name: Verify RDP
+        shell: pwsh
+        run: |
+          Write-Host "=== VERIFICATION RDP ==="
+
+          $listener = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (-not $listener) {
+            Write-Error "Le port RDP 3389 n'écoute pas."
+            exit 1
+          }
+
+          Write-Host "Le port TCP 3389 est actif."
+
+          Write-Host ""
+          Write-Host "=== INFORMATIONS DE CONNEXION ==="
+          Write-Host "Adresse Tailscale : $env:TAILSCALE_IP"
+          Write-Host "Port              : 3389"
+          Write-Host "Utilisateur        : RDP"
+          Write-Host "Mot de passe       : secret GitHub RDP_PASSWORD"
+          Write-Host "================================"
+
+      # --------------------------------------------------
+      # 7. Maintenir la VM active
+      # --------------------------------------------------
+      - name: Keep Runner Alive
+        shell: pwsh
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "       WINDOWS RDP EST ACTIF"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Adresse Tailscale : $env:TAILSCALE_IP"
+          Write-Host "Port              : 3389"
+          Write-Host "Utilisateur        : RDP"
+          Write-Host ""
+          Write-Host "La VM restera active jusqu'à la fin"
+          Write-Host "du délai du workflow."
+          Write-Host ""
+
+          while ($true) {
+            Write-Host "[$(Get-Date)] RDP actif - Tailscale : $env:TAILSCALE_IP"
+            Start-Sleep -Seconds 300
+          }
